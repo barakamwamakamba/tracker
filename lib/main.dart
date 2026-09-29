@@ -1,39 +1,56 @@
 import 'package:flutter/material.dart';
-import 'package:tracker/screens/home_screen.dart';
-import '../services/hive_service.dart';
-import '../services/notification_service.dart';
+import 'package:google_mobile_ads/google_mobile_ads.dart';
+import 'package:tracker/database/app_database.dart';
+import 'package:tracker/database/repositories/daily_completion_repository.dart';
+import 'package:tracker/database/repositories/goal_repository.dart';
+import 'package:tracker/routers/app_routers.dart';
+import 'package:provider/provider.dart';
+import 'package:tracker/services/ad_service.dart';
+import 'package:tracker/services/alarm_service.dart';
 
 final GlobalKey<NavigatorState> navigatorKey = GlobalKey<NavigatorState>();
-
-void main() async {
+final adService = AdService();
+final alarmService = AlarmService();
+Future<void> main() async {
+  final database = AppDatabase();
   WidgetsFlutterBinding.ensureInitialized();
-  await HiveService.initHive();
-  await NotificationService.init();
 
-  runApp(const MyApp());
-}
+  await MobileAds.instance.initialize();
+  adService.loadInterstitialAd();
+  await alarmService.initialize();
 
-void scheduleDailyLogReminder() {
-  NotificationService.dailyReminder(
-    id: 0,
-    hour: 10,
-    minute: 00,
-    body: 'Don’t forget to log your daily intake!',
-    title: 'Daily Tracker',
+  runApp(
+    MultiProvider(
+      providers: [
+        Provider<AppDatabase>.value(value: database),
+
+        Provider<AdService>.value(value: adService),
+
+        Provider<AlarmService>.value(value: alarmService),
+
+        Provider<GoalRepository>(create: (_) => GoalRepository(database)),
+
+        Provider<DailyCompletionRepository>(
+          create: (_) => DailyCompletionRepository(database),
+        ),
+      ],
+      child: const MyApp(),
+    ),
   );
 }
+
+void scheduleDailyLogReminder() {}
 
 class MyApp extends StatelessWidget {
   const MyApp({super.key});
 
   @override
   Widget build(BuildContext context) {
-    return MaterialApp(
-      navigatorKey: navigatorKey,
+    return MaterialApp.router(
       title: "Tracker",
       debugShowCheckedModeBanner: false,
       theme: ThemeData(primarySwatch: Colors.blue),
-      home: HomeScreen(),
+      routerConfig: AppRouters().appRouter,
     );
   }
 }

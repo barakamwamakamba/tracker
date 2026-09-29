@@ -1,151 +1,223 @@
 import 'package:flutter/material.dart';
-import 'package:hive_flutter/hive_flutter.dart';
-import 'package:table_calendar/table_calendar.dart';
-import 'package:tracker/screens/add_log_screen.dart';
-import '../model/daily_log.dart';
-import '../services/hive_service.dart';
+import 'package:go_router/go_router.dart';
+import 'package:provider/provider.dart';
+import 'package:tracker/database/repositories/daily_completion_repository.dart';
+import 'package:tracker/database/repositories/goal_repository.dart';
+import 'package:tracker/services/score_service.dart';
 
-class HomeScreen extends StatefulWidget {
+class HomeScreen extends StatelessWidget {
   const HomeScreen({super.key});
 
   @override
-  State<HomeScreen> createState() => _HomeScreenState();
-}
-
-class _HomeScreenState extends State<HomeScreen> {
-  late final LazyBox<DailyLog> box;
-  DateTime _focusedDay = DateTime.now();
-  DateTime? _selectedDay;
-
-  // Store all log dates for quick lookup
-  Set<DateTime> loggedDates = {};
-
-  @override
-  void initState() {
-    super.initState();
-    box = Hive.lazyBox<DailyLog>(HiveService.dailyBox);
-    _loadLoggedDates();
-  }
-
-  void _loadLoggedDates() async {
-    final dates = <DateTime>{};
-    for (int i = 0; i < box.length; i++) {
-      final log = await box.getAt(i);
-      if (log != null) {
-        dates.add(DateTime(log.date.year, log.date.month, log.date.day));
-      }
-    }
-    setState(() {
-      loggedDates = dates;
-    });
-  }
-
-  bool _isLogged(DateTime day) {
-    final date = DateTime(day.year, day.month, day.day);
-    return loggedDates.contains(date);
-  }
-
-  @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(title: const Text("Behavior Tracker")),
-      body: ValueListenableBuilder<LazyBox<DailyLog>>(
-        valueListenable: box.listenable(),
-        builder: (context, box, _) {
-          _loadLoggedDates(); // refresh whenever Hive changes
+    final today = DateTime.now();
+    final goalRepository = context.read<GoalRepository>();
+    final completionRespository = context.read<DailyCompletionRepository>();
+    final scoreService = ScoreService();
 
-          return Column(
-            children: [
-              TableCalendar(
-                firstDay: DateTime(2023, 1, 1),
-                lastDay: DateTime(2030, 12, 31),
-                focusedDay: _focusedDay,
-                selectedDayPredicate: (day) => isSameDay(_selectedDay, day),
-                onDaySelected: (selectedDay, focusedDay) {
-                  setState(() {
-                    _selectedDay = selectedDay;
-                    _focusedDay = focusedDay;
-                  });
-                },
-                calendarBuilders: CalendarBuilders(
-                  defaultBuilder: (context, day, focusedDay) {
-                    if (_isLogged(day)) {
-                      return Container(
-                        margin: const EdgeInsets.all(6.0),
-                        decoration: BoxDecoration(
-                          color: Colors.green,
-                          shape: BoxShape.circle,
-                        ),
-                        alignment: Alignment.center,
-                        child: Text(
-                          '${day.day}',
-                          style: const TextStyle(color: Colors.white),
-                        ),
-                      );
-                    }
-                    return null;
-                  },
-                ),
-              ),
-              const SizedBox(height: 20),
-              Expanded(
-                child: _selectedDay != null
-                    ? FutureBuilder<List<DailyLog>>(
-                        future: _getLogsForDay(_selectedDay!),
-                        builder: (context, snapshot) {
-                          if (!snapshot.hasData) return const Center(child: CircularProgressIndicator());
-                          final logs = snapshot.data!;
-                          if (logs.isEmpty) return const Center(child: Text("No logs for this day"));
-                          return ListView.builder(
-                            itemCount: logs.length,
-                            itemBuilder: (context, index) {
-                              final log = logs[index];
-                              return ListTile(
-                                title: Text("Water: ${log.waterIntake}L"),
-                                subtitle: Text(log.notes),
-                                trailing: Row(
-                                  mainAxisSize: MainAxisSize.min,
-                                  children: [
-                                    if (log.alcohol)
-                                      const Icon(Icons.local_bar, color: Colors.red),
-                                    if (log.caffeine)
-                                      const Icon(Icons.coffee, color: Colors.brown),
-                                  ],
-                                ),
-                              );
-                            },
-                          );
-                        },
-                      )
-                    : const Center(child: Text("Select a day to see logs")),
-              ),
-            ],
-          );
-        },
+    return Scaffold(
+      body: SafeArea(
+        child: StreamBuilder(
+          stream: goalRepository.watchGoals(),
+          builder: (context, goalSnapshot) {
+            if (!goalSnapshot.hasData) {
+              return const Center(child: CircularProgressIndicator());
+            }
+
+            final goals = goalSnapshot.data!
+                .where((goal) => goal.isActive)
+                .toList();
+
+            debugPrint("$goals");
+
+            return StreamBuilder(
+              stream: completionRespository.watchCompletionForDate(today),
+              builder: (context, completionSnapshot) {
+                if (!completionSnapshot.hasData) {
+                  return const Center(child: CircularProgressIndicator());
+                }
+
+                final completions = completionSnapshot.data!;
+
+                final completedGoals = goals.where((goal) {
+                  return completions.any(
+                    (completion) =>
+                        completion.goalId == goal.id && completion.completed,
+                  );
+                }).length;
+
+                final score = scoreService.calculateScore(
+                  totalGoals: goals.length,
+                  completedGoals: completedGoals,
+                );
+
+                final label = scoreService.getLabel(score);
+
+                return SingleChildScrollView(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 20,
+                    vertical: 10,
+                  ),
+                  child: Column(
+                    children: [
+                      Text("Good morning"),
+                      const SizedBox(height: 5),
+                      Text("Let's make today count."),
+
+                      const SizedBox(height: 20),
+
+                      Text("Today"),
+                      const SizedBox(height: 5),
+
+                      Text(_formateDate(today)),
+                      const SizedBox(height: 20),
+
+                      Text('${score.round()}%'),
+                      Text(label),
+                      const SizedBox(height: 20),
+
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          const Text("Today's Goals"),
+                          Text('$completedGoals/ ${goals.length}'),
+                        ],
+                      ),
+
+                      const SizedBox(height: 20),
+
+                      if (goals.isEmpty) _buildEmptyState(context),
+
+                      ...goals.map((goal) {
+                        final completed = completions.any(
+                          (completion) =>
+                              completion.goalId == goal.id &&
+                              completion.completed,
+                        );
+
+                        return GoalCard(
+                          title: goal.title,
+                          completed: completed,
+                          onTap: () async {
+                            await completionRespository.toggleCompletion(
+                              goalId: goal.id,
+                              date: today,
+                            );
+                          },
+                        );
+                      }),
+
+                      const SizedBox(height: 20),
+                    ],
+                  ),
+                );
+              },
+            );
+          },
+        ),
       ),
+
       floatingActionButton: FloatingActionButton(
+        backgroundColor: Colors.black,
         onPressed: () {
-          Navigator.push(
-            context,
-            MaterialPageRoute(builder: (context) => const AddLogScreen()),
-          );
+          context.push("/add-goal-screen");
         },
-        child: const Icon(Icons.add),
+        child: Icon(Icons.add, color: Colors.white, size: 25),
       ),
     );
   }
 
-  Future<List<DailyLog>> _getLogsForDay(DateTime day) async {
-    final selectedLogs = <DailyLog>[];
-    for (int i = 0; i < box.length; i++) {
-      final log = await box.getAt(i);
-      if (log != null &&
-          log.date.year == day.year &&
-          log.date.month == day.month &&
-          log.date.day == day.day) {
-        selectedLogs.add(log);
-      }
-    }
-    return selectedLogs;
+  String _formateDate(DateTime date) {
+    const months = [
+      'January',
+      'February',
+      'March',
+      'April',
+      'May',
+      'June',
+      'July',
+      'August',
+      'September',
+      'October',
+      'November',
+      'December',
+    ];
+
+    return '${months[date.month - 1]} ${date.day}, ${date.year}';
+  }
+
+  Widget _buildEmptyState(BuildContext context) {
+    return Container(
+      child: Column(
+        children: [
+          Icon(Icons.flag_outlined, size: 45),
+          const SizedBox(height: 5),
+          Text("Add your first goal and start tracking your day."),
+        ],
+      ),
+    );
+  }
+}
+
+class GoalCard extends StatelessWidget {
+  final String title;
+  final bool completed;
+  final VoidCallback onTap;
+
+  const GoalCard({
+    required this.title,
+    required this.completed,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      margin: const EdgeInsets.only(bottom: 12),
+      decoration: BoxDecoration(
+        color: completed
+            ? Colors.green.withValues(alpha: 0.08)
+            : Colors.grey.shade100,
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: ListTile(
+        leading: GestureDetector(
+          onTap: onTap,
+          child: AnimatedContainer(
+            duration: const Duration(milliseconds: 200),
+            width: 30,
+            height: 30,
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              border: Border.all(
+                color: completed ? Colors.green : Colors.grey.shade400,
+                width: 2,
+              ),
+              color: completed ? Colors.green : Colors.transparent,
+            ),
+            child: completed
+                ? const Icon(Icons.check, size: 18, color: Colors.white)
+                : null,
+          ),
+        ),
+
+        title: Text(
+          title,
+          style: TextStyle(
+            fontSize: 16,
+            decoration: completed ? TextDecoration.lineThrough : null,
+          ),
+        ),
+        subtitle: Text(
+          completed ? "Completed" : "Mark  as done",
+          style: TextStyle(
+            color: completed ? Colors.green : Colors.grey.shade600,
+          ),
+        ),
+
+        trailing: completed ? const Icon(Icons.check_circle) : null,
+        onTap: onTap,
+      ),
+    );
   }
 }
